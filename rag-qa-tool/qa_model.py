@@ -92,8 +92,7 @@ def process_book(bookname='bertrand.txt'):
             f.write(par)
 
     # Process the chunks
-    chunk_vectors = np.array([emb_model.encode(chunk) for chunk in process_book()])
-    np.save('chunk_vectors.npy', chunk_vectors)
+    chunk_vectors = np.array([emb_model.encode(chunk) for chunk in processed])
 
     # Create the Faiss index
     index = faiss.IndexFlatL2(chunk_vectors.shape[1])
@@ -101,28 +100,51 @@ def process_book(bookname='bertrand.txt'):
 
     faiss.write_index(index, 'vectorstore.index')
 
-    return chunk_vectors, index, processed
+    return index, processed
 
-def get_chunk_index():
+def get_index():
+    # Try loading in the chunk vectors and index and book
     try:
-        chunk_vectors = np.load('chunk_vectors.npy')
         index = faiss.read_index('vectorstore.index')
         with open('processed_book.txt', 'r') as f:
             processed_book = f.readlines()
+
+    # If the files don't exist, process the book
     except FileNotFoundError:
-        chunk_vectors, index, processed_book = process_book()
-    return chunk_vectors, index, processed_book
+        index, processed_book = process_book()
+
+    return index, processed_book
 
 def retrieve_relevant_chunks(query, n_relevant=5):
-    chunk_vectors, index, processed_book = get_chunk_index()
+    # Load the chunk vectors, index, and processed_book
+    index, processed_book = get_index()
+
+    # Encode the query
     query_vector = emb_model.encode(query)
+
+    # Find nearest neighbors
     _, idxs = index.search(query_vector.reshape(1, -1), n_relevant)
+
+    # Return relevant chunks
     return [processed_book[i] for i in idxs[0]]
 
-def generate_response(query):
+def generate_response(query, temperature=0, max_tokens=200):
+    # Use the index to find the most relevant chunks
+    relevant_chunks = retrieve_relevant_chunks(query)
+
+    # Include the relevant chunks in the prompt
     updated_prompt = f"""
     Answer the following question: "{query}"
-    Please also cite your source, including page number and chapter.
+    
+    Use the following relevant information, and cite the page numbers and chapters that you use:
+    "{relevant_chunks}"
     """
-    relevant_chunks = retrieve_relevant_chunks(query)
-    return llm.generate_response(query, relevant_chunks)
+
+    # Generate response from the model
+    response = llm(updated_prompt, stream=True, stop='\n\n', temperature=temperature, max_tokens=max_tokens)
+    generated_text = ""
+    for output in response:
+        result = output['choices'][0]['text']
+        generated_text+=result
+
+    return generated_text, response
